@@ -6,14 +6,13 @@ export const inject = ['webServer'];
 
 /**
  * DSH 附件上传插件 - 后端服务
- * 负责接收浏览器上传的文件并保存在当前工作区的「文件上传」子目录下。
  */
 export function apply(ctx) {
-  const route = {
+  // 1. 文件上传路由：支持二进制流流式写入与 JSON Base64
+  const uploadRoute = {
     kind: 'exact',
     path: '/api/mobile-upload',
     handler: async (req, res) => {
-      // 允许跨域及 OPTIONS 预检
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
@@ -31,35 +30,58 @@ export function apply(ctx) {
       }
 
       try {
-        // 读取 HTTP 请求流
-        const chunks = [];
-        for await (const chunk of req) {
-          chunks.push(chunk);
+        const url = new URL(req.url || '/', 'http://127.0.0.1');
+        const queryName = url.searchParams.get('name');
+        const queryWorkspace = url.searchParams.get('workspace');
+        const contentType = (req.headers['content-type'] || '').toLowerCase();
+
+        let originalName = queryName ? decodeURIComponent(queryName) : '';
+        let workspaceRoot = queryWorkspace ? decodeURIComponent(queryWorkspace) : '';
+        let fileBuffer = null;
+
+        if (contentType.includes('application/json')) {
+          // JSON Base64 模式
+          const chunks = [];
+          for await (const chunk of req) {
+            chunks.push(chunk);
+          }
+          const rawPayload = Buffer.concat(chunks).toString('utf8');
+          const body = JSON.parse(rawPayload);
+          originalName = body.name || originalName;
+          workspaceRoot = body.workspacePath || workspaceRoot;
+          if (body.data) {
+            fileBuffer = Buffer.from(body.data, 'base64');
+          }
+        } else {
+          // 二进制流直传模式 (移动端极速、超低内存占用)
+          const chunks = [];
+          for await (const chunk of req) {
+            chunks.push(chunk);
+          }
+          fileBuffer = Buffer.concat(chunks);
         }
-        const rawPayload = Buffer.concat(chunks).toString('utf8');
-        const body = JSON.parse(rawPayload);
 
-        const { name: originalName, data: base64Data, workspacePath: clientWorkspace } = body;
+        if (!originalName) {
+          originalName = 'upload_' + Date.now();
+        }
 
-        if (!originalName || !base64Data) {
+        if (!fileBuffer || fileBuffer.length === 0) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, error: '缺少文件名 (name) 或 Base64 数据 (data)' }));
+          res.end(JSON.stringify({ ok: false, error: '上传的文件内容为空' }));
           return;
         }
 
-        // 动态定位当前工作区物理路径
-        let workspaceRoot = clientWorkspace;
+        // 动态定位当前工作区
         if (!workspaceRoot || typeof workspaceRoot !== 'string' || !fs.existsSync(workspaceRoot)) {
           workspaceRoot = process.env.DSH_WORKSPACE || process.cwd() || '/root/工作区';
         }
 
-        // 确定保存目录：当前工作区/文件上传
         const targetDir = path.resolve(workspaceRoot, '文件上传');
         if (!fs.existsSync(targetDir)) {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        // 处理同名文件递增编号（避免覆盖已有同名文件）
+        // 递增防覆盖
         const ext = path.extname(originalName);
         const base = path.basename(originalName, ext);
         let finalFileName = originalName;
@@ -70,13 +92,11 @@ export function apply(ctx) {
         }
 
         const finalFilePath = path.join(targetDir, finalFileName);
-        const fileBuffer = Buffer.from(base64Data, 'base64');
         fs.writeFileSync(finalFilePath, fileBuffer);
 
         const responseData = {
           ok: true,
           fileName: finalFileName,
-          // 相对当前工作区的相对引用标记：文件上传/xxx
           relativeReference: `文件上传/${finalFileName}`,
           absolutePath: finalFilePath,
           size: fileBuffer.length
@@ -94,6 +114,33 @@ export function apply(ctx) {
     }
   };
 
-  // 挂载到 DSH webServer 服务中，销毁时自动移除
-  ctx.effect(() => ctx.webServer.register(route), 'dsh-upload-plugin: /api/mobile-upload route');
+  // 2. 调起 MT 管理器路由 (通过 DSHA 设备桥 127.0.0.1:3090)
+  const launchMtRoute = {
+    kind: 'exact',
+    path: '/api/launch-mt',
+    handler: async (req, res) => {
+      try {
+        let token = '';
+        if (fs.existsSync('/root/.dsh/.bridge_token')) {
+          token = fs.readFileSync('/root/.dsh/.bridge_token', 'utf8').trim();
+        }
+
+        const bridgeUrl = `http://127.0.0.1:3090/app/launch?pkg=bin.mt.plus&token=${encodeURIComponent(token)}`;
+        const bridgeRes = await fetch(bridgeUrl);
+        const data = await bridgeRes.json();
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ ok: true, bridgeResult: data }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: err.message || '调起 MT 管理器失败' }));
+      }
+    }
+  };
+
+  ctx.effect(() => ctx.webServer.register(uploadRoute), 'dsh-a-upload-plugin: /api/mobile-upload route');
+  ctx.effect(() => ctx.webServer.register(launchMtRoute), 'dsh-a-upload-plugin: /api/launch-mt route');
 }
