@@ -6,13 +6,14 @@ export const inject = ['webServer'];
 
 /**
  * DSH 附件上传插件 - 后端服务
+ * 接收来自客户端选择的文件，保存至当前工作区的「文件上传」目录。
  */
 export function apply(ctx) {
-  // 1. 文件上传路由：支持二进制流流式写入与 JSON Base64
   const uploadRoute = {
     kind: 'exact',
     path: '/api/mobile-upload',
     handler: async (req, res) => {
+      // 允许跨域与预检
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
@@ -53,7 +54,7 @@ export function apply(ctx) {
             fileBuffer = Buffer.from(body.data, 'base64');
           }
         } else {
-          // 二进制流直传模式 (移动端极速、超低内存占用)
+          // 二进制流模式
           const chunks = [];
           for await (const chunk of req) {
             chunks.push(chunk);
@@ -81,7 +82,7 @@ export function apply(ctx) {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        // 递增防覆盖
+        // 处理同名文件递增编号防覆盖
         const ext = path.extname(originalName);
         const base = path.basename(originalName, ext);
         let finalFileName = originalName;
@@ -99,48 +100,20 @@ export function apply(ctx) {
           fileName: finalFileName,
           relativeReference: `文件上传/${finalFileName}`,
           absolutePath: finalFilePath,
-          size: fileBuffer.length
+          size: fileBuffer.length,
         };
 
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
-          'Access-Control-Allow-Origin': '*'
+          'Access-Control-Allow-Origin': '*',
         });
         res.end(JSON.stringify(responseData));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: err.message || '保存文件失败' }));
       }
-    }
-  };
-
-  // 2. 调起 MT 管理器路由 (通过 DSHA 设备桥 127.0.0.1:3090)
-  const launchMtRoute = {
-    kind: 'exact',
-    path: '/api/launch-mt',
-    handler: async (req, res) => {
-      try {
-        let token = '';
-        if (fs.existsSync('/root/.dsh/.bridge_token')) {
-          token = fs.readFileSync('/root/.dsh/.bridge_token', 'utf8').trim();
-        }
-
-        const bridgeUrl = `http://127.0.0.1:3090/app/launch?pkg=bin.mt.plus&token=${encodeURIComponent(token)}`;
-        const bridgeRes = await fetch(bridgeUrl);
-        const data = await bridgeRes.json();
-
-        res.writeHead(200, {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Access-Control-Allow-Origin': '*'
-        });
-        res.end(JSON.stringify({ ok: true, bridgeResult: data }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: err.message || '调起 MT 管理器失败' }));
-      }
-    }
+    },
   };
 
   ctx.effect(() => ctx.webServer.register(uploadRoute), 'dsh-a-upload-plugin: /api/mobile-upload route');
-  ctx.effect(() => ctx.webServer.register(launchMtRoute), 'dsh-a-upload-plugin: /api/launch-mt route');
 }
