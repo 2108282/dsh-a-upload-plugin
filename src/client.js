@@ -35,6 +35,11 @@ function UploadButton(props) {
     setUploading(true);
     const references = [];
 
+    // 第一时间将状态反馈填入输入框，确保证明已收到系统选择回调！
+    if (inputActions && typeof inputActions.setDraft === 'function') {
+      inputActions.setDraft(`[正在读取并上传 ${files.length} 个文件...]`);
+    }
+
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -50,24 +55,37 @@ function UploadButton(props) {
           body: buffer,
         });
 
-        if (!response.ok) continue;
+        if (!response.ok) {
+          const errText = await response.text();
+          if (inputActions && typeof inputActions.setDraft === 'function') {
+            inputActions.setDraft(`[上传失败: HTTP ${response.status} ${errText}]`);
+          }
+          return;
+        }
 
         const data = await response.json();
         if (data.ok && data.relativeReference) {
           references.push(data.relativeReference);
+        } else {
+          if (inputActions && typeof inputActions.setDraft === 'function') {
+            inputActions.setDraft(`[上传失败: ${data.error || '未知错误'}]`);
+          }
+          return;
         }
       }
 
       if (references.length > 0) {
         const mentionTags = references.map((ref) => `@"${ref}"`).join(' ');
         if (inputActions && typeof inputActions.setDraft === 'function') {
-          let draft = currentDraft ? currentDraft.trimEnd() : '';
-          draft = draft ? `${draft} ${mentionTags} ` : `${mentionTags} `;
-          inputActions.setDraft(draft);
+          // 成功填入标准引用标记
+          inputActions.setDraft(mentionTags + ' ');
         }
       }
     } catch (err) {
       console.error('[dsh-upload] 上传出错:', err);
+      if (inputActions && typeof inputActions.setDraft === 'function') {
+        inputActions.setDraft(`[上传出错: ${err.message || String(err)}]`);
+      }
     } finally {
       setUploading(false);
       e.target.value = ''; // 允许重复选择相同文件
@@ -103,64 +121,43 @@ function UploadButton(props) {
     strokeDashoffset: '12',
   }));
 
-  return h('div', {
+  // 使用标准 HTML5 label 元素包裹 input，确保在移动端点击必定穿透触发，且不被系统丢弃 change 事件
+  return h('label', {
     style: {
       display: 'inline-flex',
       alignItems: 'center',
+      justifyContent: 'center',
+      cursor: uploading ? 'not-allowed' : 'pointer',
+      margin: '0 2px',
+      padding: '6px 8px',
+      borderRadius: '6px',
+      color: uploading ? 'var(--dsw-alias-label-tertiary, #999)' : 'var(--dsw-alias-label-secondary, #666)',
       position: 'relative',
     },
+    title: '上传附件',
+    'aria-label': '上传附件',
   }, [
-    h('div', {
-      key: 'btn-box',
+    h('input', {
+      key: 'file-input',
+      type: 'file',
+      accept: '*/*',
+      multiple: true,
+      disabled: uploading,
+      // 行业标准视觉隐藏方案，确保在 DOM 渲染树上真实存在，绝不被移动端丢弃事件
       style: {
-        position: 'relative',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: '6px',
+        position: 'absolute',
+        width: '1px',
+        height: '1px',
+        padding: 0,
+        margin: '-1px',
         overflow: 'hidden',
+        clip: 'rect(0, 0, 0, 0)',
+        whiteSpace: 'nowrap',
+        border: 0,
       },
-    }, [
-      h('input', {
-        key: 'file-input',
-        type: 'file',
-        accept: '*/*',
-        multiple: true,
-        disabled: uploading,
-        title: '选择文件上传到当前工作区',
-        style: {
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          opacity: 0,
-          cursor: uploading ? 'not-allowed' : 'pointer',
-          zIndex: 10,
-        },
-        onChange: handleFileChange,
-      }),
-      h('button', {
-        key: 'visual-btn',
-        type: 'button',
-        disabled: uploading,
-        title: '上传附件',
-        'aria-label': '上传附件',
-        style: {
-          background: 'transparent',
-          border: 'none',
-          padding: '6px 8px',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: uploading ? 'var(--dsw-alias-label-tertiary, #999)' : 'var(--dsw-alias-label-secondary, #666)',
-          opacity: uploading ? 0.6 : 1,
-          transition: 'all 0.2s ease',
-          pointerEvents: 'none',
-        },
-      }, uploading ? spinnerIcon : paperclipIcon),
-    ]),
-
+      onChange: handleFileChange,
+    }),
+    uploading ? spinnerIcon : paperclipIcon,
     h('style', {
       key: 'keyframes',
     }, '@keyframes dsh-spin { 100% { transform: rotate(360deg); } }'),
