@@ -5,6 +5,17 @@ export const inject = ['slots'];
 
 const h = React.createElement;
 
+// 抓包日志工具：把前端任何步骤实时发送给后台
+function sendDebugLog(type, payload) {
+  try {
+    fetch('/debug-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, payload, time: Date.now() }),
+    }).catch(() => {});
+  } catch {}
+}
+
 /**
  * 附件上传按钮组件
  * 嵌入在 DSH 聊天输入框左下角插槽 (conversation.input.left)。
@@ -31,30 +42,51 @@ function UploadButton(props) {
 
   const showToast = (msg) => {
     setToast(msg);
-    setTimeout(() => setToast(''), 4000);
+    setTimeout(() => setToast(''), 5000);
+  };
+
+  const handleInputClick = () => {
+    sendDebugLog('INPUT_CLICK', { time: Date.now() });
   };
 
   const handleFileChange = async (e) => {
     const files = e.target.files;
-    if (!files || files.length === 0) return;
+    sendDebugLog('INPUT_CHANGE', {
+      hasFiles: !!files,
+      count: files ? files.length : 0,
+      fileNames: files ? Array.from(files).map((f) => ({ name: f.name, size: f.size, type: f.type })) : [],
+    });
+
+    if (!files || files.length === 0) {
+      showToast('⚠️ 未选择任何文件');
+      return;
+    }
 
     setUploading(true);
-    showToast(`正在上传 ${files.length} 个文件...`);
+    showToast(`正在读取与上传 ${files.length} 个文件...`);
     const references = [];
 
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        // 避开 /api 鉴权，直接二进制流发送给 /upload-handler
+        sendDebugLog('READ_FILE_START', { name: file.name, size: file.size });
+
+        // 读取为 ArrayBuffer，确保真实流数据有效
+        const buffer = await file.arrayBuffer();
+        sendDebugLog('READ_FILE_DONE', { name: file.name, byteLength: buffer.byteLength });
+
         const uploadUrl = `/upload-handler?name=${encodeURIComponent(file.name)}&workspace=${encodeURIComponent(currentWorkspacePath)}`;
+        sendDebugLog('FETCH_START', { uploadUrl });
 
         const response = await fetch(uploadUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/octet-stream',
           },
-          body: file,
+          body: buffer,
         });
+
+        sendDebugLog('FETCH_RESPONSE', { status: response.status, ok: response.ok });
 
         if (!response.ok) {
           const errText = await response.text();
@@ -62,6 +94,8 @@ function UploadButton(props) {
         }
 
         const data = await response.json();
+        sendDebugLog('FETCH_JSON', data);
+
         if (data.ok && data.relativeReference) {
           references.push(data.relativeReference);
         } else {
@@ -71,16 +105,20 @@ function UploadButton(props) {
 
       if (references.length > 0) {
         const mentionTags = references.map((ref) => `@"${ref}"`).join(' ');
+        sendDebugLog('SET_DRAFT', { mentionTags });
+
         if (inputActions && typeof inputActions.setDraft === 'function') {
           let draft = currentDraft ? currentDraft.trimEnd() : '';
           draft = draft ? `${draft} ${mentionTags} ` : `${mentionTags} `;
           inputActions.setDraft(draft);
         }
-        showToast(`✅ 已上传并填入输入框！`);
+
+        showToast(`✅ 已成功上传并引用 ${references.length} 个文件！`);
       }
     } catch (err) {
       console.error('[dsh-upload] 上传失败:', err);
-      showToast(`❌ 失败: ${err.message || String(err)}`);
+      sendDebugLog('UPLOAD_EXCEPTION', { message: err.message, stack: err.stack });
+      showToast(`❌ 上传失败: ${err.message || String(err)}`);
     } finally {
       setUploading(false);
       e.target.value = ''; // 允许重复选择同名文件
@@ -134,7 +172,7 @@ function UploadButton(props) {
         overflow: 'hidden',
       },
     }, [
-      // 原生透明 input 贴在按钮上，用户点击直接触发系统原生文件选择，绝不丢事件
+      // 原生透明 input 贴在按钮上，用户点击直接触发系统原生文件选择
       h('input', {
         key: 'file-input',
         type: 'file',
@@ -152,6 +190,7 @@ function UploadButton(props) {
           cursor: uploading ? 'not-allowed' : 'pointer',
           zIndex: 10,
         },
+        onClick: handleInputClick,
         onChange: handleFileChange,
       }),
       h('button', {
@@ -178,17 +217,19 @@ function UploadButton(props) {
     toast ? h('div', {
       key: 'toast-bubble',
       style: {
-        position: 'absolute',
-        bottom: '125%',
-        left: 0,
+        position: 'fixed',
+        top: '16px',
+        left: '50%',
+        transform: 'translateX(-50%)',
         whiteSpace: 'nowrap',
-        backgroundColor: toast.startsWith('❌') ? '#ff4d4f' : 'var(--dsw-specific-input-major, #2c2c2e)',
+        backgroundColor: toast.startsWith('❌') ? '#ff4d4f' : '#10a37f',
         color: '#fff',
-        fontSize: '12px',
-        padding: '4px 8px',
-        borderRadius: '4px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-        zIndex: 100,
+        fontSize: '13px',
+        fontWeight: 'bold',
+        padding: '8px 16px',
+        borderRadius: '20px',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+        zIndex: 999999,
         pointerEvents: 'none',
       },
     }, toast) : null,
@@ -199,7 +240,7 @@ function UploadButton(props) {
   ]);
 }
 
-export function apply(ctx) {
+exports.apply = function apply(ctx) {
   ctx.slots.inject('conversation.input.left', () =>
     ctx.slots.register({
       name: 'conversation.input.left',
