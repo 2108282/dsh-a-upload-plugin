@@ -1,0 +1,52 @@
+name: Build and Release DSH Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Release Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Build
+        run: node build.mjs
+
+      - name: Package Archive
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          PKG_NAME=$(node -p "require('./package.json').name.replace('@', '').replace('/', '-')")
+          ARCHIVE_NAME="${PKG_NAME}-v${VERSION}.tar.gz"
+
+          # 仅打包 DSH 运行所需的发布产物
+          tar -czvf "${ARCHIVE_NAME}" \
+            package.json \
+            cordis.patch.yml \
+            lib/ \
+            README.md \
+            LICENSE 2>/dev/null || true
+
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE_NAME }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
